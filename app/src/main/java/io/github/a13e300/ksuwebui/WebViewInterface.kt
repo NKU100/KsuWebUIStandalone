@@ -2,6 +2,8 @@ package io.github.a13e300.ksuwebui
 
 import android.app.Activity
 import android.content.Context
+import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
 import android.os.Handler
 import android.os.Looper
 import android.text.TextUtils
@@ -9,6 +11,7 @@ import android.view.Window
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.widget.Toast
+import androidx.core.content.pm.PackageInfoCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.topjohnwu.superuser.CallbackList
@@ -21,6 +24,7 @@ import java.util.concurrent.CompletableFuture
 
 class WebViewInterface(
     val context: Context,
+    private val activity: WebUIActivity,
     private val webView: WebView,
     private val modDir: String
 ) {
@@ -171,16 +175,117 @@ class WebViewInterface(
                 }
             }
         }
+        enableEdgeToEdge(enable)
+    }
+
+    @JavascriptInterface
+    fun enableEdgeToEdge(enable: Boolean = true) {
+        activity.setInsetsEnabled(enable)
     }
 
     @JavascriptInterface
     fun moduleInfo(): String {
         val currentModuleInfo = JSONObject()
         currentModuleInfo.put("moduleDir", modDir)
-        val moduleId = File(modDir).getName()
+        val moduleId = File(modDir).name
         currentModuleInfo.put("id", moduleId)
-        // TODO: more
+
+        // Read module.prop for full module info
+        try {
+            val propContent = withNewRootShell(true) {
+                ShellUtils.fastCmd(this, "cat $modDir/module.prop")
+            }
+            propContent.lines().forEach { line ->
+                val parts = line.split("=", limit = 2)
+                if (parts.size == 2) {
+                    val key = parts[0].trim()
+                    val value = parts[1].trim()
+                    if (key.isNotEmpty()) {
+                        currentModuleInfo.put(key, value)
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+
+        // Check marker files
+        try {
+            val enabled = withNewRootShell(true) {
+                ShellUtils.fastCmd(this, "[ -f $modDir/disable ] && echo false || echo true")
+            }.trim()
+            currentModuleInfo.put("enabled", enabled == "true")
+
+            val update = withNewRootShell(true) {
+                ShellUtils.fastCmd(this, "[ -f $modDir/update ] && echo true || echo false")
+            }.trim()
+            currentModuleInfo.put("update", update == "true")
+
+            val remove = withNewRootShell(true) {
+                ShellUtils.fastCmd(this, "[ -f $modDir/remove ] && echo true || echo false")
+            }.trim()
+            currentModuleInfo.put("remove", remove == "true")
+        } catch (_: Exception) {}
+
         return currentModuleInfo.toString()
+    }
+
+    @JavascriptInterface
+    fun listPackages(type: String): String {
+        val pm = context.packageManager
+        @Suppress("DEPRECATION")
+        val packages = pm.getInstalledPackages(PackageManager.GET_META_DATA)
+        val packageNames = packages
+            .filter { pkg ->
+                val flags = pkg.applicationInfo?.flags ?: 0
+                when (type.lowercase()) {
+                    "system" -> (flags and ApplicationInfo.FLAG_SYSTEM) != 0
+                    "user" -> (flags and ApplicationInfo.FLAG_SYSTEM) == 0
+                    else -> true
+                }
+            }
+            .map { it.packageName }
+            .sorted()
+
+        val jsonArray = JSONArray()
+        for (pkgName in packageNames) {
+            jsonArray.put(pkgName)
+        }
+        return jsonArray.toString()
+    }
+
+    @JavascriptInterface
+    fun getPackagesInfo(packageNamesJson: String): String {
+        val packageNames = JSONArray(packageNamesJson)
+        val jsonArray = JSONArray()
+        val pm = context.packageManager
+        for (i in 0 until packageNames.length()) {
+            val pkgName = packageNames.getString(i)
+            try {
+                @Suppress("DEPRECATION")
+                val pkg = pm.getPackageInfo(pkgName, 0)
+                val app = pkg.applicationInfo
+                val obj = JSONObject()
+                obj.put("packageName", pkg.packageName)
+                obj.put("versionName", pkg.versionName ?: "")
+                obj.put("versionCode", PackageInfoCompat.getLongVersionCode(pkg))
+                obj.put("appLabel", app?.loadLabel(pm)?.toString() ?: pkg.packageName)
+                obj.put("isSystem", if (app != null) ((app.flags and ApplicationInfo.FLAG_SYSTEM) != 0) else JSONObject.NULL)
+                obj.put("uid", app?.uid ?: JSONObject.NULL)
+                jsonArray.put(obj)
+            } catch (_: PackageManager.NameNotFoundException) {
+                val obj = JSONObject()
+                obj.put("packageName", pkgName)
+                obj.put("error", "Package not found or inaccessible")
+                jsonArray.put(obj)
+            }
+        }
+        return jsonArray.toString()
+    }
+
+    @JavascriptInterface
+    fun exit() {
+        activity.runOnUiThread {
+            activity.finish()
+        }
     }
 }
 

@@ -10,9 +10,11 @@ import androidx.webkit.WebViewAssetLoader;
 
 import com.topjohnwu.superuser.nio.FileSystemManager;
 
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.zip.GZIPInputStream;
 
 /**
@@ -56,6 +58,8 @@ public final class RemoteFsPathHandler implements WebViewAssetLoader.PathHandler
     private final File mDirectory;
 
     private final FileSystemManager mFs;
+    private final InsetsSupplier mInsetsSupplier;
+    private final OnInsetsRequestedListener mOnInsetsRequestedListener;
 
     /**
      * Creates PathHandler for app's internal storage.
@@ -77,10 +81,16 @@ public final class RemoteFsPathHandler implements WebViewAssetLoader.PathHandler
      * @param context {@link Context} that is used to access app's internal storage.
      * @param directory the absolute path of the exposed app internal storage directory from
      *                  which files can be loaded.
+     * @param fs {@link FileSystemManager} instance for root file access.
+     * @param insetsSupplier {@link InsetsSupplier} to provide window insets for styling web content.
+     * @param onInsetsRequestedListener {@link OnInsetsRequestedListener} to notify when insets are requested.
      * @throws IllegalArgumentException if the directory is not allowed.
      */
-    public RemoteFsPathHandler(@NonNull Context context, @NonNull File directory, FileSystemManager fs) {
+    public RemoteFsPathHandler(@NonNull Context context, @NonNull File directory, FileSystemManager fs,
+                               @NonNull InsetsSupplier insetsSupplier, OnInsetsRequestedListener onInsetsRequestedListener) {
         try {
+            mInsetsSupplier = insetsSupplier;
+            mOnInsetsRequestedListener = onInsetsRequestedListener;
             mDirectory = new File(getCanonicalDirPath(directory));
             if (!isAllowedInternalStorageDir(context)) {
                 throw new IllegalArgumentException("The given directory \"" + directory
@@ -128,6 +138,29 @@ public final class RemoteFsPathHandler implements WebViewAssetLoader.PathHandler
     @WorkerThread
     @NonNull
     public WebResourceResponse handle(@NonNull String path) {
+        if ("internal/insets.css".equals(path)) {
+            if (mOnInsetsRequestedListener != null) {
+                mOnInsetsRequestedListener.onInsetsRequested(true);
+            }
+            String css = mInsetsSupplier.get().getCss();
+            return new WebResourceResponse(
+                    "text/css",
+                    "utf-8",
+                    new ByteArrayInputStream(css.getBytes(StandardCharsets.UTF_8))
+            );
+        }
+        if ("internal/colors.css".equals(path)) {
+            // KernelSU manager implements this via MonetColorsProvider which reads colors from
+            // the Compose MaterialTheme/MiuixTheme color scheme at runtime, ensuring correct
+            // dark/light mode adaptation. KsuWebUIStandalone has no Compose dependency, so we
+            // cannot replicate that approach. Returning an empty CSS is intentional — the WebUI
+            // module is expected to handle theming on its own when this endpoint yields no content.
+            return new WebResourceResponse(
+                    "text/css",
+                    "utf-8",
+                    new ByteArrayInputStream("".getBytes(StandardCharsets.UTF_8))
+            );
+        }
         try {
             File file = getCanonicalFileIfChild(mDirectory, path);
             if (file != null) {
@@ -182,5 +215,14 @@ public final class RemoteFsPathHandler implements WebViewAssetLoader.PathHandler
     public static String guessMimeType(@NonNull String filePath) {
         String mimeType = MimeUtil.getMimeFromFileName(filePath);
         return mimeType == null ? DEFAULT_MIME_TYPE : mimeType;
+    }
+
+    public interface InsetsSupplier {
+        @NonNull
+        Insets get();
+    }
+
+    public interface OnInsetsRequestedListener {
+        void onInsetsRequested(boolean enable);
     }
 }
