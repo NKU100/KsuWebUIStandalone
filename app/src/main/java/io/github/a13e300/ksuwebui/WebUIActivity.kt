@@ -12,6 +12,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -28,6 +29,17 @@ class WebUIActivity : ComponentActivity(), FileSystemService.Listener {
 
     private lateinit var webView: WebView
     private lateinit var moduleDir: String
+
+    // 与 KernelSU 同步：追踪 WebView 是否可以后退
+    private var webCanGoBack = false
+
+    private val backCallback = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() {
+            if (webCanGoBack) {
+                webView.goBack()
+            }
+        }
+    }
 
     @Volatile
     var isInsetsEnabled = false
@@ -123,6 +135,7 @@ class WebUIActivity : ComponentActivity(), FileSystemService.Listener {
         }
 
         setContentView(webView)
+        onBackPressedDispatcher.addCallback(this, backCallback)
         FileSystemService.start(this)
     }
 
@@ -166,6 +179,9 @@ class WebUIActivity : ComponentActivity(), FileSystemService.Listener {
             }
 
             override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
+                // 与 KernelSU 同步：每次页面变化时更新后退状态
+                webCanGoBack = view?.canGoBack() ?: false
+                backCallback.isEnabled = webCanGoBack
                 if (isInsetsEnabled) {
                     webView.evaluateJavascript(currentInsets.js, null)
                 }
